@@ -6,6 +6,7 @@ import { AppService } from './app.service.js';
 import { BigIntSerializationInterceptor } from './common/interceptors/bigint-serialization.interceptor.js';
 import { PrismaModule } from './prisma/prisma.module.js';
 import { AuthModule } from './auth/auth.module.js';
+import { WalletsModule } from './wallets/wallets.module.js';
 
 export const { ObserveModule, ObserveInstrument } = createObserveModule();
 
@@ -21,6 +22,7 @@ export const { ObserveModule, ObserveInstrument } = createObserveModule();
       serviceId: 'backend',
     }),
     AuthModule,
+    WalletsModule,
   ],
   controllers: [AppController],
   providers: [
