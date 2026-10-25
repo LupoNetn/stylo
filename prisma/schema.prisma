@@ -1,0 +1,108 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum OrderSide {
+  BUY
+  SELL
+}
+
+enum OrderType {
+  LIMIT
+  MARKET
+}
+
+enum OrderStatus {
+  PENDING
+  OPEN
+  PARTIALLY_FILLED
+  FILLED
+  CANCELED
+  REJECTED
+}
+
+enum EventType {
+  SUBMITTED
+  MATCHED
+  CANCELED
+  REJECTED
+}
+
+model User {
+  id           String    @id @default(uuid())
+  email        String    @unique
+  passwordHash String
+  createdAt    DateTime  @default(now())
+  accounts     Account[]
+  orders       Order[]
+}
+
+model Asset {
+  id          String    @id
+  name        String
+  precision   Int
+  accounts    Account[]
+  baseOrders  Order[]   @relation("BaseAsset")
+  quoteOrders Order[]   @relation("QuoteAsset")
+}
+
+model Account {
+  id               BigInt @id @default(autoincrement())
+  userId           String
+  user             User   @relation(fields: [userId], references: [id])
+  assetId          String
+  asset            Asset  @relation(fields: [assetId], references: [id])
+  balanceAvailable BigInt @default(0)
+  balanceLocked    BigInt @default(0)
+
+  @@unique([userId, assetId])
+}
+
+model Order {
+  id           BigInt       @id
+  userId       String
+  user         User         @relation(fields: [userId], references: [id])
+  baseAssetId  String
+  baseAsset    Asset        @relation("BaseAsset", fields: [baseAssetId], references: [id])
+  quoteAssetId String
+  quoteAsset   Asset        @relation("QuoteAsset", fields: [quoteAssetId], references: [id])
+  side         OrderSide
+  type         OrderType
+  price        BigInt
+  quantity     BigInt
+  status       OrderStatus
+  createdAt    DateTime     @default(now())
+  buyTrades    Trade[]      @relation("BuyOrder")
+  sellTrades   Trade[]      @relation("SellOrder")
+  events       OrderEvent[]
+}
+
+model Trade {
+  id            BigInt   @id @default(autoincrement())
+  buyOrderId    BigInt
+  buyOrder      Order    @relation("BuyOrder", fields: [buyOrderId], references: [id])
+  sellOrderId   BigInt
+  sellOrder     Order    @relation("SellOrder", fields: [sellOrderId], references: [id])
+  matchPrice    BigInt
+  matchQuantity BigInt
+  executedAt    DateTime @default(now())
+
+  @@index([buyOrderId])
+  @@index([sellOrderId])
+}
+
+model OrderEvent {
+  id            BigInt    @id @default(autoincrement())
+  orderId       BigInt
+  order         Order     @relation(fields: [orderId], references: [id])
+  eventType     EventType
+  deltaQuantity BigInt
+  timestamp     DateTime  @default(now())
+
+  @@index([orderId])
+}
