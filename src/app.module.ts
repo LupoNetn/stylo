@@ -7,6 +7,7 @@ import { BigIntSerializationInterceptor } from './common/interceptors/bigint-ser
 import { PrismaModule } from './prisma/prisma.module.js';
 import { AuthModule } from './auth/auth.module.js';
 import { WalletsModule } from './wallets/wallets.module.js';
+import { OrdersModule } from './orders/orders.module.js';
 
 export const { ObserveModule, ObserveInstrument } = createObserveModule();
 
@@ -23,6 +24,7 @@ export const { ObserveModule, ObserveInstrument } = createObserveModule();
     }),
     AuthModule,
     WalletsModule,
+    OrdersModule,
   ],
   controllers: [AppController],
   providers: [

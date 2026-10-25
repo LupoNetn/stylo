@@ -13,6 +13,6 @@ import { JwtCookieGuard } from './guards/jwt-cookie.guard.js';
   ],
   controllers: [AuthController],
   providers: [AuthService, JwtCookieGuard],
-  exports: [AuthService, JwtCookieGuard],
+  exports: [AuthService, JwtCookieGuard, JwtModule],
 })
 export class AuthModule {}
