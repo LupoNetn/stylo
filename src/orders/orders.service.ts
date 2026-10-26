@@ -35,33 +35,82 @@ export class OrdersService {
     const priceBig = BigInt(price)
     const quantityBig = BigInt(quantity)
     try {
-        const order: InternalOrder = {
-            id: crypto.randomUUID(),
+        const orderId = BigInt(Date.now());
+        const internalOrder: InternalOrder = {
+            id: orderId.toString(),
+            userId: userID,
             baseAssetId,
             quoteAssetId,
             side,
             type,
             price: priceBig,
             quantity: quantityBig,
-        }
+            remaining: quantityBig,
+            createdAt: Date.now(),
+        };
 
-        //user operations from prisma
-        const assetID = order.side === CreateOrderSide.BUY ? order.quoteAssetId : order.baseAssetId
-        const account = await this.prisma.account.findUnique({
-            where: { userId: userID, assetId: assetID},
-            select: {
-                assetId: true,
-                balanceAvailable: true,
-                balanceLocked: true,
+        await this.prisma.$transaction(async (tx) => {
+            const assetID =
+                side === CreateOrderSide.BUY ? quoteAssetId : baseAssetId;
+
+            const account = await tx.account.findUnique({
+                where: {
+                    userId_assetId: {
+                        userId: userID,
+                        assetId: assetID,
+                    },
+                },
+                select: { assetId: true },
+            });
+
+            if (!account) {
+                throw new WsException('This user account does not exist');
             }
-        })
 
-        if(!account) {
-            throw new WsException('this user is not authenticated')
-        }
+            const amountToLock =
+                side === CreateOrderSide.BUY
+                    ? priceBig * quantityBig
+                    : quantityBig;
+
+            const locked = await tx.account.updateMany({
+                where: {
+                    userId: userID,
+                    assetId: assetID,
+                    balanceAvailable: { gte: amountToLock },
+                },
+                data: {
+                    balanceAvailable: { decrement: amountToLock },
+                    balanceLocked: { increment: amountToLock },
+                },
+            });
+
+            if (locked.count !== 1) {
+                throw new WsException(`Insufficient available ${assetID} balance`);
+            }
+
+            await tx.order.create({
+                data: {
+                    id: orderId,
+                    userId: userID,
+                    baseAssetId,
+                    quoteAssetId,
+                    side,
+                    type,
+                    price: priceBig,
+                    quantity: quantityBig,
+                    status: 'PENDING',
+                },
+            });
+        });
+
+        
 
     } catch (error) {
-        
+        if (error instanceof WsException) {
+            throw error;
+        }
+
+        throw new WsException('Unable to create order');
     }
   }
 }
