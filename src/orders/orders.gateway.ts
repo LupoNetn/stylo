@@ -1,7 +1,11 @@
 import {
+  MessageBody,
   OnGatewayConnection,
   OnGatewayDisconnect,
+  SubscribeMessage,
   WebSocketGateway,
+  ConnectedSocket,
+  WsException,
 } from '@nestjs/websockets';
 import { JwtService } from '@nestjs/jwt';
 import { OnModuleDestroy, OnModuleInit } from '@nestjs/common';
@@ -9,6 +13,7 @@ import { randomUUID } from 'node:crypto';
 import type { IncomingMessage } from 'node:http';
 import WebSocket from 'ws';
 import { OrdersService } from './orders.service.js';
+import { CreateOrderDto } from './dto/create-order.dto.js';
 
 type ClientConnection = {
   socket: WebSocket;
@@ -25,9 +30,7 @@ type AccessTokenPayload = {
   tokenType?: string;
 };
 
-function readAccessTokenFromCookie(
-  cookieHeader?: string,
-): string | undefined {
+function readAccessTokenFromCookie(cookieHeader?: string): string | undefined {
   if (!cookieHeader) return undefined;
 
   const accessTokenCookie = cookieHeader
@@ -38,9 +41,7 @@ function readAccessTokenFromCookie(
   if (!accessTokenCookie) return undefined;
 
   try {
-    return decodeURIComponent(
-      accessTokenCookie.slice('access_token='.length),
-    );
+    return decodeURIComponent(accessTokenCookie.slice('access_token='.length));
   } catch {
     return undefined;
   }
@@ -56,15 +57,9 @@ export class OrdersGateway
     OnModuleInit,
     OnModuleDestroy
 {
-  private readonly activeConnections = new Map<
-    string,
-    ClientConnection
-  >();
+  private readonly activeConnections = new Map<string, ClientConnection>();
 
-  private readonly connectionIdsBySocket = new WeakMap<
-    WebSocket,
-    string
-  >();
+  private readonly connectionIdsBySocket = new WeakMap<WebSocket, string>();
 
   private heartbeatInterval!: NodeJS.Timeout;
 
@@ -87,10 +82,7 @@ export class OrdersGateway
 
       const payload = await this.jwt.verifyAsync<AccessTokenPayload>(token);
 
-      if (
-        payload.tokenType !== 'access' ||
-        typeof payload.sub !== 'string'
-      ) {
+      if (payload.tokenType !== 'access' || typeof payload.sub !== 'string') {
         this.rejectConnection(client, 'Invalid access token');
         return;
       }
@@ -147,10 +139,7 @@ export class OrdersGateway
       for (const [connectionId, connection] of this.activeConnections) {
         const socket = connection.socket;
 
-        if (
-          !connection.isAlive ||
-          socket.readyState !== WebSocket.OPEN
-        ) {
+        if (!connection.isAlive || socket.readyState !== WebSocket.OPEN) {
           socket.terminate();
           this.activeConnections.delete(connectionId);
           this.connectionIdsBySocket.delete(socket);
@@ -181,5 +170,28 @@ export class OrdersGateway
     ) {
       client.close(1008, reason);
     }
+  }
+
+  //Websocket Event handlers
+  @SubscribeMessage('order:create')
+  async handleCreateOrder(
+    @MessageBody() order: CreateOrderDto,
+    @ConnectedSocket() client: WebSocket,
+  ) {
+    const connectionId = this.connectionIdsBySocket.get(client);
+    if (!connectionId) {
+      throw new WsException('Connection is not authenticated');
+    }
+
+    const connection = this.activeConnections.get(connectionId);
+    if (!connection) {
+      throw new WsException('Connection session not found');
+    }
+    const newOrder = await this.ordersService.createOrderService(
+      order,
+      connection.userId,
+    );
+
+    client.send(JSON.stringify({ type: 'order:ack', data: newOrder }));
   }
 }
