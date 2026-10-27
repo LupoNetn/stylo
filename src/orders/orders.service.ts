@@ -16,6 +16,13 @@ export interface InternalOrder {
   createdAt: number;
 }
 
+export interface MatchResult {
+  buyOrderId: string;
+  sellOrderId: string;
+  price: bigint;
+  quantity: bigint;
+}
+
 interface OrderBook {
   bids: Map<string, InternalOrder[]>;
   asks: Map<string, InternalOrder[]>;
@@ -26,11 +33,17 @@ export class OrdersService {
   private orderBooks = new Map<string, OrderBook>();
   private activeOrdersById = new Map<string, InternalOrder>();
 
-  private orderMatchingEngine(order: InternalOrder) {}
+  private orderMatchingEngine(order: InternalOrder): MatchResult[] {
+    // No immediate match is a valid result; the order will rest in the book.
+    return [];
+  }
 
   constructor(private readonly prisma: PrismaService) {}
   
-  async createOrderService(order: CreateOrderDto, userID: string): Promise<void> {
+  async createOrderService(
+    order: CreateOrderDto,
+    userID: string,
+  ): Promise<MatchResult[]> {
     const {baseAssetId,quoteAssetId,side,type,price, quantity} = order;
     const priceBig = BigInt(price)
     const quantityBig = BigInt(quantity)
@@ -103,7 +116,7 @@ export class OrdersService {
             });
         });
 
-        
+        return this.orderMatchingEngine(internalOrder);
 
     } catch (error) {
         if (error instanceof WsException) {
