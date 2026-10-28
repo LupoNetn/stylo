@@ -34,8 +34,8 @@ export class OrdersService {
   private activeOrdersById = new Map<string, InternalOrder>();
 
   private orderMatchingEngine(order: InternalOrder): MatchResult[] {
-    // No immediate match is a valid result; the order will rest in the book.
-    return [];
+    const { baseAssetId, quoteAssetId, side, type, price, quantity } = order
+    
   }
 
   constructor(private readonly prisma: PrismaService) {}
