@@ -6,6 +6,7 @@ import { WsException } from '@nestjs/websockets';
 export interface InternalOrder {
   id: string;
   userId: string;
+  symbol: string;
   baseAssetId: string;
   quoteAssetId: string;
   side: 'BUY' | 'SELL';
@@ -34,23 +35,144 @@ export class OrdersService {
   private activeOrdersById = new Map<string, InternalOrder>();
 
   private orderMatchingEngine(order: InternalOrder): MatchResult[] {
-    const { baseAssetId, quoteAssetId, side, type, price, quantity } = order
-    
+    const { symbol, side, type, price, quantity } = order;
+
+    let book = this.orderBooks.get(symbol);
+    if (!book) {
+      book = { bids: new Map(), asks: new Map() };
+      this.orderBooks.set(symbol, book);
+    }
+
+    const isBuy = side === 'BUY';
+    const oppositeBook = isBuy ? book.asks : book.bids;
+
+    const pricesArray = Array.from(oppositeBook.keys());
+    const sortedPrices = pricesArray
+      .map(BigInt)
+      .sort((a, b) => (isBuy ? (a < b ? -1 : 1) : a > b ? -1 : 1));
+
+    const matches: MatchResult[] = [];
+
+    for (const matchPrice of sortedPrices) {
+      if (order.remaining === 0n) break;
+
+      if (type === 'LIMIT') {
+        const canMatch = isBuy ? price >= matchPrice : price <= matchPrice;
+        if (!canMatch) break;
+      }
+
+      const queue = oppositeBook.get(matchPrice.toString()) || [];
+
+      while (queue.length > 0 && order.remaining > 0n) {
+        const makerOrder = queue[0];
+
+        const tradeQuantity =
+          order.remaining > makerOrder.remaining
+            ? makerOrder.remaining
+            : order.remaining;
+
+        order.remaining -= tradeQuantity;
+        makerOrder.remaining -= tradeQuantity;
+
+        matches.push({
+          buyOrderId: isBuy ? order.id : makerOrder.id,
+          sellOrderId: isBuy ? makerOrder.id : order.id,
+          price: matchPrice,
+          quantity: tradeQuantity,
+        });
+
+        if (makerOrder.remaining === 0n) {
+          queue.shift();
+          this.activeOrdersById.delete(makerOrder.id);
+        }
+      }
+
+      if (queue.length === 0) {
+        oppositeBook.delete(matchPrice.toString());
+      }
+    }
+
+    // If order has remaining volume and is LIMIT, rest it on the book
+    if (order.remaining > 0n && type === 'LIMIT') {
+      const ownBook = isBuy ? book.bids : book.asks;
+      const priceStr = order.price.toString();
+
+      if (!ownBook.has(priceStr)) {
+        ownBook.set(priceStr, []);
+      }
+      ownBook.get(priceStr)!.push(order);
+      this.activeOrdersById.set(order.id, order);
+    }
+
+    return matches;
   }
 
   constructor(private readonly prisma: PrismaService) {}
-  
+
   async createOrderService(
     order: CreateOrderDto,
     userID: string,
   ): Promise<MatchResult[]> {
-    const {baseAssetId,quoteAssetId,side,type,price, quantity} = order;
-    const priceBig = BigInt(price)
-    const quantityBig = BigInt(quantity)
+    const { baseAssetId, quoteAssetId, side, type, price, quantity } = order;
+    const priceBig = BigInt(price);
+    const quantityBig = BigInt(quantity);
+    const symbol = `${baseAssetId}_${quoteAssetId}`;
     try {
-        const orderId = BigInt(Date.now());
-        const internalOrder: InternalOrder = {
-            id: orderId.toString(),
+      const orderId = BigInt(Date.now());
+      const internalOrder: InternalOrder = {
+        id: orderId.toString(),
+        userId: userID,
+        symbol,
+        baseAssetId,
+        quoteAssetId,
+        side,
+        type,
+        price: priceBig,
+        quantity: quantityBig,
+        remaining: quantityBig,
+        createdAt: Date.now(),
+      };
+
+      await this.prisma.$transaction(async (tx) => {
+        const assetID =
+          side === CreateOrderSide.BUY ? quoteAssetId : baseAssetId;
+
+        const account = await tx.account.findUnique({
+          where: {
+            userId_assetId: {
+              userId: userID,
+              assetId: assetID,
+            },
+          },
+          select: { assetId: true },
+        });
+
+        if (!account) {
+          throw new WsException('This user account does not exist');
+        }
+
+        const amountToLock =
+          side === CreateOrderSide.BUY ? priceBig * quantityBig : quantityBig;
+
+        const locked = await tx.account.updateMany({
+          where: {
+            userId: userID,
+            assetId: assetID,
+            balanceAvailable: { gte: amountToLock },
+          },
+          data: {
+            balanceAvailable: { decrement: amountToLock },
+            balanceLocked: { increment: amountToLock },
+          },
+        });
+
+        if (locked.count !== 1) {
+          throw new WsException(`Insufficient available ${assetID} balance`);
+        }
+
+        await tx.order.create({
+          data: {
+            id: orderId,
             userId: userID,
             baseAssetId,
             quoteAssetId,
@@ -58,72 +180,18 @@ export class OrdersService {
             type,
             price: priceBig,
             quantity: quantityBig,
-            remaining: quantityBig,
-            createdAt: Date.now(),
-        };
-
-        await this.prisma.$transaction(async (tx) => {
-            const assetID =
-                side === CreateOrderSide.BUY ? quoteAssetId : baseAssetId;
-
-            const account = await tx.account.findUnique({
-                where: {
-                    userId_assetId: {
-                        userId: userID,
-                        assetId: assetID,
-                    },
-                },
-                select: { assetId: true },
-            });
-
-            if (!account) {
-                throw new WsException('This user account does not exist');
-            }
-
-            const amountToLock =
-                side === CreateOrderSide.BUY
-                    ? priceBig * quantityBig
-                    : quantityBig;
-
-            const locked = await tx.account.updateMany({
-                where: {
-                    userId: userID,
-                    assetId: assetID,
-                    balanceAvailable: { gte: amountToLock },
-                },
-                data: {
-                    balanceAvailable: { decrement: amountToLock },
-                    balanceLocked: { increment: amountToLock },
-                },
-            });
-
-            if (locked.count !== 1) {
-                throw new WsException(`Insufficient available ${assetID} balance`);
-            }
-
-            await tx.order.create({
-                data: {
-                    id: orderId,
-                    userId: userID,
-                    baseAssetId,
-                    quoteAssetId,
-                    side,
-                    type,
-                    price: priceBig,
-                    quantity: quantityBig,
-                    status: 'PENDING',
-                },
-            });
+            status: 'PENDING',
+          },
         });
+      });
 
-        return this.orderMatchingEngine(internalOrder);
-
+      return this.orderMatchingEngine(internalOrder);
     } catch (error) {
-        if (error instanceof WsException) {
-            throw error;
-        }
+      if (error instanceof WsException) {
+        throw error;
+      }
 
-        throw new WsException('Unable to create order');
+      throw new WsException('Unable to create order');
     }
   }
 }
