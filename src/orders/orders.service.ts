@@ -1,7 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { CreateOrderDto, CreateOrderSide } from './dto/create-order.dto.js';
 import { PrismaService } from '../prisma/prisma.service.js';
-import { SettlementService } from '../settlement/settlement.service.js';
 import { WsException } from '@nestjs/websockets';
 
 export interface InternalOrder {
@@ -95,10 +94,7 @@ export class OrdersService {
     return matches;
   }
 
-  constructor(
-    private readonly prisma: PrismaService,
-    private readonly settlementService: SettlementService,
-  ) {}
+  constructor(private readonly prisma: PrismaService) {}
 
   async createOrderService(
     order: CreateOrderDto,
@@ -176,9 +172,7 @@ export class OrdersService {
         });
       });
 
-      const matches = this.orderMatchingEngine(internalOrder);
-      await this.settlementService.settle(internalOrder, matches);
-      return matches;
+      return this.orderMatchingEngine(internalOrder);
     } catch (error) {
       if (error instanceof WsException) {
         throw error;
