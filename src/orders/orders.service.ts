@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { CreateOrderDto, CreateOrderSide } from './dto/create-order.dto.js';
 import { PrismaService } from '../prisma/prisma.service.js';
+import { SettlementService } from '../settlement/settlement.service.js';
 import { WsException } from '@nestjs/websockets';
 
 export interface InternalOrder {
@@ -60,54 +61,44 @@ export class OrdersService {
         const canMatch = isBuy ? price >= matchPrice : price <= matchPrice;
         if (!canMatch) break;
       }
-
       const queue = oppositeBook.get(matchPrice.toString()) || [];
 
       while (queue.length > 0 && order.remaining > 0n) {
-        const makerOrder = queue[0];
+        const makeOrder = queue[0];
 
         const tradeQuantity =
-          order.remaining > makerOrder.remaining
-            ? makerOrder.remaining
+          order.remaining > makeOrder.remaining
+            ? makeOrder.remaining
             : order.remaining;
 
         order.remaining -= tradeQuantity;
-        makerOrder.remaining -= tradeQuantity;
+        makeOrder.remaining -= tradeQuantity;
 
         matches.push({
-          buyOrderId: isBuy ? order.id : makerOrder.id,
-          sellOrderId: isBuy ? makerOrder.id : order.id,
+          buyOrderId: order.id,
+          sellOrderId: makeOrder.id,
           price: matchPrice,
           quantity: tradeQuantity,
         });
 
-        if (makerOrder.remaining === 0n) {
+        if (makeOrder.remaining === 0n) {
           queue.shift();
-          this.activeOrdersById.delete(makerOrder.id);
+          this.activeOrdersById.delete(makeOrder.id);
+        }
+
+        if (queue.length === 0) {
+          oppositeBook.delete(matchPrice.toString());
+          break;
         }
       }
-
-      if (queue.length === 0) {
-        oppositeBook.delete(matchPrice.toString());
-      }
     }
-
-    // If order has remaining volume and is LIMIT, rest it on the book
-    if (order.remaining > 0n && type === 'LIMIT') {
-      const ownBook = isBuy ? book.bids : book.asks;
-      const priceStr = order.price.toString();
-
-      if (!ownBook.has(priceStr)) {
-        ownBook.set(priceStr, []);
-      }
-      ownBook.get(priceStr)!.push(order);
-      this.activeOrdersById.set(order.id, order);
-    }
-
     return matches;
   }
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly settlementService: SettlementService,
+  ) {}
 
   async createOrderService(
     order: CreateOrderDto,
@@ -185,7 +176,9 @@ export class OrdersService {
         });
       });
 
-      return this.orderMatchingEngine(internalOrder);
+      const matches = this.orderMatchingEngine(internalOrder);
+      await this.settlementService.settle(internalOrder, matches);
+      return matches;
     } catch (error) {
       if (error instanceof WsException) {
         throw error;
